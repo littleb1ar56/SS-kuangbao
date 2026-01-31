@@ -18,8 +18,6 @@ const QB_MAX = 196608;
 const TIMEOUT = 1200;
 const BATCH_MAX = 14;
 const BP_CHECK_INTERVAL = 15;
-const READ_BATCH_HIGH = 8;
-const READ_BATCH_LOW = 2;
 
 const DEC = new TextDecoder();
 const EMPTY = new Uint8Array(0);
@@ -125,12 +123,15 @@ function parseVL(d) {
     const end = (aoff + 17) | 0;
     if (end > len) return VFAIL;
     const v = new DataView(d.buffer, d.byteOffset + aoff + 1, 16);
-    let host = '';
-    for (let i = 0; i < 14; i = (i + 2) | 0) {
-      host += v.getUint16(i).toString(16) + ':';
-    }
-    host += v.getUint16(14).toString(16);
-    r.host = host;
+    const p0 = v.getUint16(0).toString(16);
+    const p1 = v.getUint16(2).toString(16);
+    const p2 = v.getUint16(4).toString(16);
+    const p3 = v.getUint16(6).toString(16);
+    const p4 = v.getUint16(8).toString(16);
+    const p5 = v.getUint16(10).toString(16);
+    const p6 = v.getUint16(12).toString(16);
+    const p7 = v.getUint16(14).toString(16);
+    r.host = p0 + ':' + p1 + ':' + p2 + ':' + p3 + ':' + p4 + ':' + p5 + ':' + p6 + ':' + p7;
     r.off = end;
     return r;
   }
@@ -236,10 +237,10 @@ Uplink.prototype.drain = async function() {
     let bb = 0;
     
     while (bc < limit) {
-      const clen = q[(qh + bc) & Q_MASK].length | 0;
-      const newbb = (bb + clen) | 0;
-      if (bb > 0 && newbb > MERGE_MAX) break;
-      bb = newbb;
+      const idx = (qh + bc) & Q_MASK;
+      const clen = q[idx].length | 0;
+      if (bb > 0 && (bb + clen) > MERGE_MAX) break;
+      bb = (bb + clen) | 0;
       bc = (bc + 1) | 0;
     }
     
@@ -291,11 +292,26 @@ Downlink.prototype.run = async function() {
       const buf = ws.bufferedAmount | 0;
       
       if (buf > WS_HI) {
-        await this.waitBackpressure(s, ws);
+        let cnt = 0;
+        await new Promise(res => {
+          const chk = () => {
+            if (s.dead || ws.bufferedAmount < WS_LO) {
+              res();
+            } else {
+              cnt = (cnt + 1) | 0;
+              if (cnt > BP_CHECK_INTERVAL) {
+                setTimeout(res, 1);
+              } else {
+                queueMicrotask(chk);
+              }
+            }
+          };
+          chk();
+        });
         if (s.dead) break;
       }
       
-      const qt = (ws.bufferedAmount < WS_LO ? READ_BATCH_HIGH : READ_BATCH_LOW) | 0;
+      const qt = (ws.bufferedAmount < WS_LO ? 8 : 2) | 0;
       
       for (let i = 0; i < qt && !s.dead; i = (i + 1) | 0) {
         const {done, value} = await r.read();
@@ -328,25 +344,6 @@ Downlink.prototype.run = async function() {
       try { r.releaseLock(); } catch {}
     });
   }
-};
-
-Downlink.prototype.waitBackpressure = async function(s, ws) {
-  let cnt = 0;
-  await new Promise(res => {
-    const chk = () => {
-      if (s.dead || ws.bufferedAmount < WS_LO) {
-        res();
-      } else {
-        cnt = (cnt + 1) | 0;
-        if (cnt > BP_CHECK_INTERVAL) {
-          setTimeout(res, 1);
-        } else {
-          queueMicrotask(chk);
-        }
-      }
-    };
-    chk();
-  });
 };
 
 export default {
